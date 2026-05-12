@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FERCO — Control de Uniformes</title>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:#F8FAFC;color:#1A202C;}
+    ::-webkit-scrollbar{width:6px;height:6px;}
+    ::-webkit-scrollbar-track{background:#F1F5F9;}
+    ::-webkit-scrollbar-thumb{background:#CBD5E0;border-radius:3px;}
+    input,select,button,textarea{font-family:inherit;}
+    table{border-collapse:collapse;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+var firebaseConfig = {
+  apiKey: "AIzaSyC7APjoTcjKlVZThbbICI-zJvTZsKc2yZM",
+  authDomain: "ferco-uniformes-70163.firebaseapp.com",
+  projectId: "ferco-uniformes-70163",
+  storageBucket: "ferco-uniformes-70163.firebasestorage.app",
+  messagingSenderId: "747986675316",
+  appId: "1:747986675316:web:aa49d55e4c4795e19f5321"
+};
+firebase.initializeApp(firebaseConfig);
+var fbAuth = firebase.auth();
+var fbDb   = firebase.firestore();
+</script>
+<script type="text/babel">
+const {useState, useEffect, useRef} = React;
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const ROLES = {
+  "gabriela.boche@ferco.com.gt":    "admin",
+  "yuly.flores@ferco.com.gt":       "reclutamiento",
+  "marisela.velasquez@ferco.com.gt":"reclutamiento",
+  "jenifer.cobo@ferco.com.gt":      "reclutamiento",
+};
+const NOMBRES = {
+  "gabriela.boche@ferco.com.gt":    "Gabriela Coj",
+  "yuly.flores@ferco.com.gt":       "Yuly Flores",
+  "marisela.velasquez@ferco.com.gt":"Marisela Velasquez",
+  "jenifer.cobo@ferco.com.gt":      "Jenifer Cobo",
+};
+const PAISES     = ["GT","HN","SV","MX"];
+const TALLAS     = ["XS","S","M","L","XL","XXL"];
+const LOW_STOCK  = 5;
+const CATALOGO   = [
+  {tipo:"CAMISA",color:"NEGRA", marca:"FERCO CERAMICA"},
+  {tipo:"CAMISA",color:"NEGRA", marca:"FERCO"},
+  {tipo:"CAMISA",color:"BLANCA",marca:"FERCO CERAMICA"},
+  {tipo:"CAMISA",color:"BLANCA",marca:"EL REY DE LA CERAMICA"},
+  {tipo:"CAMISA",color:"BLANCA",marca:"MCP"},
+  {tipo:"BLUSA", color:"NEGRA", marca:"FERCO CERAMICA"},
+  {tipo:"BLUSA", color:"NEGRA", marca:"FERCO"},
+  {tipo:"BLUSA", color:"BLANCA",marca:"FERCO CERAMICA"},
+  {tipo:"BLUSA", color:"BLANCA",marca:"EL REY DE LA CERAMICA"},
+  {tipo:"BLUSA", color:"BLANCA",marca:"MCP"},
+  {tipo:"POLO",  color:"GRIS",  marca:"REY DE LA CERAMICA"},
+  {tipo:"POLO",  color:"GRIS",  marca:"FERCO CERAMICA"},
+  {tipo:"POLO",  color:"GRIS",  marca:"MCP"},
+];
+
+// ── Initial inventory ─────────────────────────────────────────────────────────
+function buildInventario() {
+  var items = [], n = 1;
+  ["S","M","L","XL"].forEach(function(talla) {
+    CATALOGO.forEach(function(cat) {
+      ["Hombre","Mujer"].forEach(function(genero) {
+        items.push({id:"inv-"+n++, tipo:cat.tipo, color:cat.color, marca:cat.marca, genero:genero, talla:talla, stock:6, observaciones:""});
+      });
+    });
+  });
+  return items;
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+async function callAI(messages) {
+  var res = await fetch("/.netlify/functions/claude", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({messages: messages})
+  });
+  if (!res.ok) { var t = await res.text(); throw new Error("HTTP "+res.status+": "+t.slice(0,150)); }
+  var data = await res.json();
+  if (data.error) throw new Error("API: "+JSON.stringify(data.error).slice(0,150));
+  var txt = data.content && data.content[0] ? data.content[0].text || "" : "";
+  if (!txt) throw new Error("Respuesta vacia");
+  return JSON.parse(txt.replace(/```json|```/g,"").trim());
+}
+var EP = 'Extrae datos de ticket de uniforme Ferco. Formato Jira con etiquetas y asteriscos. Reglas: nombre=Nombres+ApellidoPaterno+ApellidoMaterno, Guatemala=GT HonduraS=HN ElSalvador=SV Mexico=MX, quita prefijo GT: de sucursal, Extragrande=XL Grande=L Mediana=M Pequena=S, REY DE LA CERAMICA=EL REY DE LA CERAMICA, polo/playera=POLO camisa=CAMISA blusa=BLUSA, negro=NEGRA blanco=BLANCA gris=GRIS. Solo JSON: {"empleado":"","pais":"GT","sucursal":"","departamento":"","puesto":"","motivo":"Primer ingreso","tipo":"CAMISA","color":"NEGRA","marca":"","talla":"M","genero":"Hombre","cantidad":1}';
+async function extraerTexto(raw) {
+  return callAI([{role:"user",content:[{type:"text",text:EP+"\n\nTicket:\n"+raw}]}]);
+}
+
+// ── Excel ─────────────────────────────────────────────────────────────────────
+function generarExcel(pedidos) {
+  var pending = pedidos.filter(function(o){return o.estado==="Pendiente";});
+  var gm = {Hombre:"MASCULINO",Mujer:"FEMENINO"};
+  var cp = {BLANCA:"BLANCAS",NEGRA:"NEGRAS",GRIS:"GRISES"};
+  function groupBy(arr, fn) { var m={}; arr.forEach(function(o){var k=fn(o);(m[k]=m[k]||[]).push(o);}); return m; }
+  function sortT(arr) { return arr.slice().sort(function(a,b){return (TALLAS.indexOf(a.talla)||99)-(TALLAS.indexOf(b.talla)||99);}); }
+  function agg(arr) { var a={}; arr.forEach(function(o){var k=o.genero+"|"+o.talla+"|"+(o.tallaEspecial||"")+"|"+o.color+"|"+o.marca; if(!a[k])a[k]=Object.assign({},o,{cantidad:0}); a[k].cantidad+=o.cantidad;}); return Object.values(a); }
+  var hasEspecial = pending.some(function(o){return o.talla==="ESPECIAL";});
+  var cols = hasEspecial ? 6 : 5;
+  function tbl(rows, sp) {
+    var s=sortT(agg(rows)), t=s.reduce(function(x,r){return x+r.cantidad;},0), bg=sp?"#F59E0B":"#C8102E";
+    var espHeader = hasEspecial ? "<td style='border:1px solid #555;padding:5px;'>TALLA ESPECIAL</td>" : "";
+    var totalSpan = hasEspecial ? 5 : 4;
+    return "<tr><td colspan='"+cols+"' style='background:"+bg+";color:white;font-weight:bold;padding:6px;border:1px solid #ccc;'>Pedidos</td></tr>"+
+      "<tr style='background:#1A202C;color:white;font-weight:bold;'><td style='border:1px solid #555;padding:5px;'>GENERO</td><td style='border:1px solid #555;padding:5px;'>TALLA</td>"+(hasEspecial?"<td style='border:1px solid #555;padding:5px;background:#7C3AED;'>TALLA ESPECIAL</td>":"")+"<td style='border:1px solid #555;padding:5px;'>COLOR</td><td style='border:1px solid #555;padding:5px;'>MARCA</td><td style='border:1px solid #555;padding:5px;'>CANTIDAD</td></tr>"+
+      s.map(function(r,i){
+        var espCell = hasEspecial ? "<td style='border:1px solid #E2E8F0;padding:5px;text-align:center;color:"+(r.talla==="ESPECIAL"?"#7C3AED":"#94A3B8")+"font-weight:"+(r.talla==="ESPECIAL"?"bold":"normal")+";'>"+(r.talla==="ESPECIAL"?(r.tallaEspecial||"-"):"-")+"</td>" : "";
+        var tallaDisplay = r.talla==="ESPECIAL" ? "ESPECIAL" : r.talla;
+        return "<tr style='background:"+(i%2===0?"#F8FAFC":"#FFF")+"'><td style='border:1px solid #E2E8F0;padding:5px;'>"+(gm[r.genero]||r.genero.toUpperCase())+"</td><td style='border:1px solid #E2E8F0;padding:5px;text-align:center;'>"+tallaDisplay+"</td>"+espCell+"<td style='border:1px solid #E2E8F0;padding:5px;'>"+(cp[r.color]||r.color)+"</td><td style='border:1px solid #E2E8F0;padding:5px;'>"+r.marca+"</td><td style='border:1px solid #E2E8F0;padding:5px;text-align:center;font-weight:bold;'>"+r.cantidad+"</td></tr>";
+      }).join("")+
+      "<tr style='background:#EBF4FF;font-weight:bold;'><td colspan='"+totalSpan+"' style='border:1px solid #E2E8F0;padding:5px;text-align:right;'>TOTAL</td><td style='border:1px solid #E2E8F0;padding:5px;text-align:center;'>"+t+"</td></tr><tr><td colspan='"+cols+"' style='padding:4px;'>&nbsp;</td></tr>";
+  }
+  var std=pending.filter(function(o){return o.marca==="FERCO CERAMICA";}), spc=pending.filter(function(o){return o.marca!=="FERCO CERAMICA";});
+  var stdG=groupBy(std,function(o){return o.genero+"||"+o.color;}), spcG=groupBy(spc,function(o){return o.genero+"||"+o.color+"||"+o.marca;});
+  var PREF=["Hombre||NEGRA","Mujer||NEGRA","Mujer||BLANCA","Hombre||BLANCA","Hombre||GRIS","Mujer||GRIS"];
+  var stdKeys=[].concat(PREF.filter(function(k){return stdG[k];}), Object.keys(stdG).filter(function(k){return !PREF.includes(k);}));
+  var today=new Date().toLocaleDateString("es-GT",{day:"2-digit",month:"long",year:"numeric"});
+  var grand=pending.reduce(function(s,o){return s+o.cantidad;},0);
+  var html="<html><head><meta charset='UTF-8'><style>body{font-family:Arial;font-size:10pt;}table{border-collapse:collapse;width:620px;}</style></head><body><table>"+
+    "<tr><td colspan='5' style='background:#1A202C;color:white;font-weight:bold;font-size:16pt;text-align:center;padding:12px;border:1px solid #000;'>SOLICITUD DE UNIFORMES - FERCO CERAMICA</td></tr>"+
+    "<tr><td colspan='5' style='text-align:center;color:#64748B;padding:5px;'>Fecha: "+today+"</td></tr>"+
+    "<tr><td colspan='5' style='padding:4px;'>&nbsp;</td></tr>"+
+    stdKeys.map(function(k){return tbl(stdG[k],false);}).join("")+
+    (Object.keys(spcG).length>0?"<tr><td colspan='5' style='background:#F59E0B;color:white;font-weight:bold;text-align:center;padding:8px;'>PEDIDOS ESPECIALES</td></tr>"+Object.values(spcG).map(function(g){return tbl(g,true);}).join(""):"")+"</table></body></html>";
+  var blob=new Blob([html],{type:"application/vnd.ms-excel;charset=utf-8;"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");a.href=url;a.download="Pedido_Uniformes_"+new Date().toISOString().split("T")[0]+".xls";a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Icons (pure JS, no JSX spread) ───────────────────────────────────────────
+function Ico(props) {
+  var sz = props.size || 18;
+  var st = {display:"block", flexShrink:0};
+  if (props.color) st.color = props.color;
+  return React.createElement("svg",{width:sz,height:sz,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"2",strokeLinecap:"round",strokeLinejoin:"round",style:st},
+    React.createElement("path",{d:props.d}));
+}
+var IC = {
+  orders:  "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 0 2-2h2a2 2 0 0 0 2 2",
+  history: "M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z",
+  inv:     "M20 7l-8-4-8 4m16 0-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
+  check:   "M20 6L9 17l-5-5",
+  x:       "M18 6L6 18M6 6l12 12",
+  alert:   "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01",
+  edit:    "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z",
+  excel:   "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M10 13l2 2 4-4",
+  res:     "M4 4v5h.582m15.356 2A8.001 8.001 0 0 0 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 0 1-15.357-2m15.357 2H15",
+  filter:  "M22 3H2l8 9.46V19l4 2v-8.54L22 3z",
+  txt:     "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8",
+  form:    "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 12h6M9 16h4",
+  trash:   "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
+  undo:    "M3 10h10a8 8 0 0 1 8 8v2M3 10l6 6M3 10l6-6",
+  logout:  "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v1",
+  lock:    "M12 15v2m-6 4h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2zm10-10V7a4 4 0 0 0-8 0v4h8z",
+};
+
+// ── Shared styles ─────────────────────────────────────────────────────────────
+var sInp = {width:"100%",padding:"8px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#1A202C",background:"white",boxSizing:"border-box"};
+var sLbl = {fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4};
+var sTH  = {padding:"9px 12px",textAlign:"left",fontWeight:700,color:"#64748B",fontSize:11,textTransform:"uppercase",whiteSpace:"nowrap",borderBottom:"1px solid #F1F5F9",background:"#F8FAFC"};
+
+// ── Badge ─────────────────────────────────────────────────────────────────────
+function Badge(props) {
+  var map = {
+    Pendiente:{bg:"#FFF3CD",c:"#856404",b:"#FFE69C"}, Entregado:{bg:"#D1E7DD",c:"#0A3622",b:"#A3CFBB"},
+    Descartado:{bg:"#F1F5F9",c:"#64748B",b:"#CBD5E0"}, BLANCA:{bg:"#F8F9FA",c:"#212529",b:"#DEE2E6"},
+    NEGRA:{bg:"#212529",c:"#F8F9FA",b:"#495057"}, GRIS:{bg:"#E2E8F0",c:"#475569",b:"#CBD5E0"},
+    CAMISA:{bg:"#EFF6FF",c:"#1D4ED8",b:"#BFDBFE"}, BLUSA:{bg:"#FDF2F8",c:"#9D174D",b:"#FBCFE8"},
+    POLO:{bg:"#F0FDF4",c:"#166534",b:"#A3CFBB"}, admin:{bg:"#FEF3C7",c:"#92400E",b:"#FCD34D"},
+    reclutamiento:{bg:"#EFF6FF",c:"#1D4ED8",b:"#BFDBFE"},
+  };
+  var s = map[props.label] || {bg:"#F1F5F9",c:"#475569",b:"#CBD5E0"};
+  return <span style={{background:s.bg,color:s.c,border:"1px solid "+s.b,padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{props.label}</span>;
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function Modal(props) {
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+      onClick={function(e){if(e.target===e.currentTarget) props.onClose();}}>
+      <div style={{background:"white",borderRadius:16,width:"100%",maxWidth:props.wide?700:520,maxHeight:"92vh",overflow:"auto",boxShadow:"0 25px 60px rgba(0,0,0,0.25)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 22px",borderBottom:"1px solid #F1F5F9",position:"sticky",top:0,background:"white",zIndex:1}}>
+          <h3 style={{margin:0,fontSize:17,fontWeight:700,color:"#1A202C"}}>{props.title}</h3>
+          <button onClick={props.onClose} style={{background:"none",border:"none",cursor:"pointer",color:"#94A3B8",padding:4}}><Ico d={IC.x} size={20}/></button>
+        </div>
+        <div style={{padding:22}}>{props.children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Country Filter ────────────────────────────────────────────────────────────
+function PaisFiltro(props) {
+  return (
+    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+      {["ALL","GT","HN","SV","MX"].map(function(c) {
+        return <button key={c} onClick={function(){props.onChange(c);}}
+          style={{padding:"5px 13px",borderRadius:20,border:"2px solid",borderColor:props.selected===c?"#C8102E":"#E2E8F0",background:props.selected===c?"#C8102E":"white",color:props.selected===c?"white":"#4A5568",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+          {c==="ALL"?"TODOS":c}
+        </button>;
+      })}
+    </div>
+  );
+}
+
+// ── Catalog cascades ──────────────────────────────────────────────────────────
+function CatSelects(props) {
+  var tipos  = Array.from(new Set(CATALOGO.map(function(c){return c.tipo;})));
+  var colors = Array.from(new Set(CATALOGO.filter(function(c){return !props.tipo||c.tipo===props.tipo;}).map(function(c){return c.color;})));
+  var marcas = Array.from(new Set(CATALOGO.filter(function(c){return (!props.tipo||c.tipo===props.tipo)&&(!props.color||c.color===props.color);}).map(function(c){return c.marca;})));
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+      <div><label style={sLbl}>Tipo</label>
+        <select style={sInp} value={props.tipo} onChange={function(e){props.setTipo(e.target.value);props.setColor("");props.setMarca("");}}>
+          <option value="">- Seleccionar -</option>{tipos.map(function(t){return <option key={t}>{t}</option>;})}
+        </select></div>
+      <div><label style={sLbl}>Color</label>
+        <select style={sInp} value={props.color} onChange={function(e){props.setColor(e.target.value);props.setMarca("");}} disabled={!props.tipo}>
+          <option value="">- Seleccionar -</option>{colors.map(function(c){return <option key={c}>{c}</option>;})}
+        </select></div>
+      <div><label style={sLbl}>Marca</label>
+        <select style={sInp} value={props.marca} onChange={function(e){props.setMarca(e.target.value);}} disabled={!props.color}>
+          <option value="">- Seleccionar -</option>{marcas.map(function(m){return <option key={m}>{m}</option>;})}
+        </select></div>
+    </div>
+  );
+}
+
+// ── Order Fields (shared form) ────────────────────────────────────────────────
+function CamposOrden(props) {
+  var f = props.form, s = props.set;
+  return (
+    <div>
+      <div style={{marginBottom:14}}>
+        <label style={{fontSize:11,fontWeight:700,color:"#64748B",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:8}}>Tipo / Color / Marca</label>
+        <CatSelects tipo={f.tipo} setTipo={function(v){s("tipo",v);}} color={f.color} setColor={function(v){s("color",v);}} marca={f.marca} setMarca={function(v){s("marca",v);}}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{gridColumn:"1/-1"}}><label style={sLbl}>Nombre completo</label><input style={sInp} value={f.empleado} onChange={function(e){s("empleado",e.target.value);}} placeholder="Nombre Apellido Apellido"/></div>
+        <div><label style={sLbl}>Pais</label><select style={sInp} value={f.pais} onChange={function(e){s("pais",e.target.value);}}>{PAISES.map(function(p){return <option key={p}>{p}</option>;})}</select></div>
+        <div><label style={sLbl}>Sucursal</label><input style={sInp} value={f.sucursal} onChange={function(e){s("sucursal",e.target.value);}} placeholder="Ej. FERCO XELA"/></div>
+        <div><label style={sLbl}>Departamento</label><input style={sInp} value={f.departamento} onChange={function(e){s("departamento",e.target.value);}}/></div>
+        <div><label style={sLbl}>Puesto</label><input style={sInp} value={f.puesto} onChange={function(e){s("puesto",e.target.value);}}/></div>
+        <div><label style={sLbl}>Motivo</label>
+          <select style={sInp} value={f.motivo} onChange={function(e){s("motivo",e.target.value);}}>
+            {["Primer ingreso","Renovacion","Reposicion","Cambio de talla"].map(function(m){return <option key={m}>{m}</option>;})}
+          </select></div>
+        <div><label style={sLbl}>Genero</label>
+          <select style={sInp} value={f.genero} onChange={function(e){s("genero",e.target.value);}}>
+            <option>Hombre</option><option>Mujer</option>
+          </select></div>
+        <div><label style={sLbl}>Talla</label>
+          <select style={sInp} value={f.talla} onChange={function(e){s("talla",e.target.value); if(e.target.value!=="ESPECIAL") s("tallaEspecial","");}}>
+            {TALLAS.map(function(t){return <option key={t}>{t}</option>;})}
+            <option value="ESPECIAL">TALLA ESPECIAL</option>
+          </select></div>
+        {f.talla==="ESPECIAL" && <div style={{gridColumn:"1/-1"}}>
+          <label style={sLbl}>Descripcion de talla especial</label>
+          <input style={sInp} value={f.tallaEspecial||""} onChange={function(e){s("tallaEspecial",e.target.value);}}
+            placeholder="Ej: 3XL, 4XL, talla 52, XS corto — usa esta nomenclatura para mantener consistencia en inventario"/>
+          <p style={{fontSize:11,color:"#94A3B8",marginTop:4}}>Esta talla se registrara como pedido especial en el inventario.</p>
+        </div>}
+        <div style={{gridColumn:"1/-1"}}><label style={sLbl}>Cantidad</label>
+          <input type="number" min={1} style={{width:90,padding:"8px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13,color:"#1A202C",background:"white",boxSizing:"border-box"}} value={f.cantidad} onChange={function(e){s("cantidad",parseInt(e.target.value)||1);}}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function emptyForm() { return {empleado:"",pais:"GT",sucursal:"",departamento:"",puesto:"",motivo:"Primer ingreso",tipo:"",color:"",marca:"",talla:"M",tallaEspecial:"",genero:"Hombre",cantidad:1}; }
+function validarForm(f) { return f.empleado && f.tipo && f.color && f.marca; }
+
+// ── Login Screen ──────────────────────────────────────────────────────────────
+function LoginScreen() {
+  var [email,setEmail] = useState("");
+  var [pass,setPass]   = useState("");
+  var [loading,setL]   = useState(false);
+  var [err,setErr]     = useState(null);
+
+  async function login() {
+    if (!email || !pass) { setErr("Completa todos los campos."); return; }
+    setL(true); setErr(null);
+    try {
+      await fbAuth.signInWithEmailAndPassword(email.trim().toLowerCase(), pass);
+    } catch(e) {
+      var msgs = {"auth/user-not-found":"Correo no registrado.","auth/wrong-password":"Contrasena incorrecta.","auth/invalid-credential":"Correo o contrasena incorrectos.","auth/invalid-email":"Correo invalido.","auth/too-many-requests":"Demasiados intentos. Espera un momento."};
+      setErr(msgs[e.code] || "Error: "+e.message);
+    }
+    setL(false);
+  }
+
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#1A202C 0%,#2D3748 100%)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"white",borderRadius:20,padding:40,width:"100%",maxWidth:400,boxShadow:"0 25px 60px rgba(0,0,0,0.4)"}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{width:56,height:56,background:"#C8102E",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>
+            <Ico d={IC.inv} size={28} color="white"/>
+          </div>
+          <h1 style={{fontSize:24,fontWeight:800,color:"#1A202C",marginBottom:4}}>FERCO</h1>
+          <p style={{color:"#64748B",fontSize:14}}>Control de Uniformes</p>
+        </div>
+        <div style={{display:"grid",gap:14}}>
+          <div>
+            <label style={sLbl}>Correo electronico</label>
+            <input style={sInp} type="email" value={email} onChange={function(e){setEmail(e.target.value);}} placeholder="tu.correo@ferco.com.gt"
+              onKeyDown={function(e){if(e.key==="Enter") login();}}/>
+          </div>
+          <div>
+            <label style={sLbl}>Contrasena</label>
+            <input style={sInp} type="password" value={pass} onChange={function(e){setPass(e.target.value);}} placeholder="••••••••"
+              onKeyDown={function(e){if(e.key==="Enter") login();}}/>
+          </div>
+          {err && <div style={{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:8,padding:"10px 14px",fontSize:13,color:"#991B1B"}}>{err}</div>}
+          <button onClick={login} disabled={loading}
+            style={{padding:"13px",background:loading?"#94A3B8":"#C8102E",color:"white",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:loading?"not-allowed":"pointer",marginTop:4}}>
+            {loading ? "Ingresando..." : "Ingresar"}
+          </button>
+        </div>
+        <p style={{textAlign:"center",fontSize:12,color:"#94A3B8",marginTop:20}}>Acceso exclusivo para personal autorizado de FERCO</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Modals ────────────────────────────────────────────────────────────────────
+function ModalFormulario(props) {
+  var [form,setForm] = useState(emptyForm());
+  function s(k,v) { setForm(function(f){var n=Object.assign({},f); n[k]=v; return n;}); }
+  return (
+    <Modal title="Nuevo Pedido - Formulario" onClose={props.onClose} wide>
+      <CamposOrden form={form} set={s}/>
+      <div style={{display:"flex",gap:10,marginTop:18}}>
+        <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B",fontSize:13}}>Cancelar</button>
+        <button onClick={function(){if(!validarForm(form)){alert("Completa: Empleado, Tipo, Color y Marca.");return;} props.onSave(form);}}
+          style={{flex:2,padding:11,background:"#C8102E",color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer"}}>Registrar Pedido</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalTexto(props) {
+  var [form,setForm]   = useState(emptyForm());
+  var [texto,setTexto] = useState("");
+  var [loading,setL]   = useState(false);
+  var [msg,setMsg]     = useState(null);
+  var [listo,setListo] = useState(false);
+  var [errDet,setED]   = useState(null);
+  function s(k,v) { setForm(function(f){var n=Object.assign({},f); n[k]=v; return n;}); }
+
+  async function extraer() {
+    if (!texto.trim()) { alert("Pega el texto primero."); return; }
+    setL(true); setMsg(null); setED(null);
+    try {
+      var p = await extraerTexto(texto);
+      setForm(function(f){return Object.assign({},f,p);});
+      var filled = Object.values(p).filter(function(v){return v&&v!=="";}).length;
+      setMsg({ok:true, text:"Datos extraidos ("+filled+" campos). Revisa y completa lo que falte."});
+      setListo(true);
+    } catch(e) {
+      setED(e.message||"Error desconocido");
+      setListo(true);
+      setMsg({ok:false, text:"La IA no pudo extraer. Completa manualmente."});
+    }
+    setL(false);
+  }
+
+  return (
+    <Modal title="Nuevo Pedido - Pegar Texto" onClose={props.onClose} wide>
+      {!listo && <div>
+        <p style={{fontSize:13,color:"#64748B",marginBottom:10,lineHeight:1.6}}>Copia el texto del ticket de Jira y pegalo aqui.</p>
+        <textarea value={texto} onChange={function(e){setTexto(e.target.value);}}
+          placeholder={"Pega aqui el texto del ticket de Jira..."}
+          style={{width:"100%",minHeight:200,padding:"12px",border:"1px solid #E2E8F0",borderRadius:10,fontSize:12,resize:"vertical",outline:"none",lineHeight:1.7,color:"#1A202C",boxSizing:"border-box",fontFamily:"monospace"}}/>
+        <div style={{display:"flex",gap:10,marginTop:14}}>
+          <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B",fontSize:13}}>Cancelar</button>
+          <button onClick={extraer} disabled={loading}
+            style={{flex:2,padding:11,background:"#7C3AED",color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            {loading ? "Extrayendo..." : "Extraer con IA"}
+          </button>
+        </div>
+      </div>}
+      {listo && <div>
+        <div style={{background:msg&&msg.ok?"#F5F3FF":"#FFF3CD",border:"1px solid "+(msg&&msg.ok?"#DDD6FE":"#FFE69C"),borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:12,color:msg&&msg.ok?"#6D28D9":"#856404",fontWeight:600,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span>{msg&&msg.text}</span>
+          <button onClick={function(){setListo(false);setMsg(null);setED(null);}} style={{marginLeft:"auto",background:"none",border:"1px solid currentColor",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",opacity:0.8}}>Editar texto</button>
+        </div>
+        {errDet && <div style={{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:11,color:"#991B1B",fontFamily:"monospace"}}>Error: {errDet}</div>}
+        <CamposOrden form={form} set={s}/>
+        <div style={{display:"flex",gap:10,marginTop:18}}>
+          <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B",fontSize:13}}>Cancelar</button>
+          <button onClick={function(){if(!validarForm(form)){alert("Completa: Empleado, Tipo, Color y Marca.");return;} props.onSave(form);}}
+            style={{flex:2,padding:11,background:"#C8102E",color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer"}}>Registrar Pedido</button>
+        </div>
+      </div>}
+    </Modal>
+  );
+}
+
+function ModalEditarPedido(props) {
+  var [form,setForm] = useState(Object.assign({},props.order));
+  function s(k,v) { setForm(function(f){var n=Object.assign({},f); n[k]=v; return n;}); }
+  return (
+    <Modal title={"Editar - "+props.order.id} onClose={props.onClose} wide>
+      <div style={{background:"#FFF3CD",border:"1px solid #FFE69C",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#856404",fontWeight:600}}>
+        Editando pedido existente. Estado y fecha no cambian.
+      </div>
+      <CamposOrden form={form} set={s}/>
+      <div style={{display:"flex",gap:10,marginTop:18}}>
+        <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B",fontSize:13}}>Cancelar</button>
+        <button onClick={function(){if(!validarForm(form)){alert("Completa: Empleado, Tipo, Color y Marca.");return;} props.onSave(form);}}
+          style={{flex:2,padding:11,background:"#0369A1",color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:700,cursor:"pointer"}}>Guardar Cambios</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalConfirmarEntrega(props) {
+  var o = props.order;
+  var inv = props.invItem;
+  var after = inv ? inv.stock - o.cantidad : null;
+  var noInv = !inv, insuf = after !== null && after < 0;
+  return (
+    <Modal title="Confirmar Entrega" onClose={props.onCancel}>
+      <div style={{background:"#F8FAFC",borderRadius:12,padding:16,marginBottom:16}}>
+        <p style={{margin:"0 0 6px",fontWeight:700,fontSize:14}}>{o.empleado}</p>
+        <p style={{margin:"0 0 4px",fontSize:13,color:"#64748B"}}>{o.tipo} {o.color} - Talla {o.talla} - {o.genero} - {o.marca}</p>
+        <p style={{margin:0,fontSize:13,color:"#64748B"}}>Cantidad: <strong>{o.cantidad}</strong></p>
+      </div>
+      {noInv && <div style={{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:10,padding:12,marginBottom:14}}><p style={{margin:0,fontWeight:700,color:"#991B1B",fontSize:13}}>SKU no encontrado. Se marca entregado sin descontar stock.</p></div>}
+      {insuf && !noInv && <div style={{background:"#FFFBEB",border:"1px solid #FCD34D",borderRadius:10,padding:12,marginBottom:14}}><p style={{margin:0,fontWeight:700,color:"#92400E",fontSize:13}}>Stock insuficiente: {inv.stock} disponibles, quedaria en {after}.</p></div>}
+      {!noInv && !insuf && <div style={{background:"#F0FDF4",border:"1px solid #A3CFBB",borderRadius:10,padding:12,marginBottom:14}}><p style={{margin:0,fontSize:13,color:"#0A3622"}}>Stock: {inv.stock} despues de entrega: <strong>{after}</strong></p></div>}
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={props.onCancel} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B"}}>Cancelar</button>
+        <button onClick={props.onConfirm} style={{flex:2,padding:11,background:insuf?"#F59E0B":"#22C55E",color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>{insuf?"Entregar de todas formas":"Confirmar Entrega"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalResurtido(props) {
+  var [form,setForm] = useState({responsable:"",tipo:"",color:"",marca:"",genero:"Hombre",talla:"M",cantidad:1,notas:""});
+  function s(k,v) { setForm(function(f){var n=Object.assign({},f); n[k]=v; return n;}); }
+  var tipos  = Array.from(new Set(CATALOGO.map(function(c){return c.tipo;})));
+  var colors = Array.from(new Set(CATALOGO.filter(function(c){return !form.tipo||c.tipo===form.tipo;}).map(function(c){return c.color;})));
+  var marcas = Array.from(new Set(CATALOGO.filter(function(c){return (!form.tipo||c.tipo===form.tipo)&&(!form.color||c.color===form.color);}).map(function(c){return c.marca;})));
+  return (
+    <Modal title="Registrar Resurtido" onClose={props.onClose}>
+      <div style={{background:"#F0FDF4",border:"1px solid #A3CFBB",borderRadius:10,padding:12,marginBottom:16,fontSize:12,color:"#0A3622"}}>Al registrar un resurtido el stock aumentara automaticamente.</div>
+      <div style={{display:"grid",gap:12}}>
+        <div><label style={sLbl}>Responsable</label><input style={sInp} value={form.responsable} onChange={function(e){s("responsable",e.target.value);}} placeholder="Tu nombre"/></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          <div><label style={sLbl}>Tipo</label><select style={sInp} value={form.tipo} onChange={function(e){s("tipo",e.target.value);s("color","");s("marca","");}}><option value="">- Seleccionar -</option>{tipos.map(function(t){return <option key={t}>{t}</option>;})}</select></div>
+          <div><label style={sLbl}>Color</label><select style={sInp} value={form.color} onChange={function(e){s("color",e.target.value);s("marca","");}} disabled={!form.tipo}><option value="">- Seleccionar -</option>{colors.map(function(c){return <option key={c}>{c}</option>;})}</select></div>
+          <div><label style={sLbl}>Marca</label><select style={sInp} value={form.marca} onChange={function(e){s("marca",e.target.value);}} disabled={!form.color}><option value="">- Seleccionar -</option>{marcas.map(function(m){return <option key={m}>{m}</option>;})}</select></div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+          <div><label style={sLbl}>Genero</label><select style={sInp} value={form.genero} onChange={function(e){s("genero",e.target.value);}}><option>Hombre</option><option>Mujer</option></select></div>
+          <div><label style={sLbl}>Talla</label><select style={sInp} value={form.talla} onChange={function(e){s("talla",e.target.value);}}>{TALLAS.map(function(t){return <option key={t}>{t}</option>;})}</select></div>
+          <div><label style={sLbl}>Cantidad</label><input type="number" min={1} style={sInp} value={form.cantidad} onChange={function(e){s("cantidad",parseInt(e.target.value)||1);}}/></div>
+        </div>
+        <div><label style={sLbl}>Notas</label><input style={sInp} value={form.notas} onChange={function(e){s("notas",e.target.value);}} placeholder="Ej: Factura 123"/></div>
+      </div>
+      <div style={{display:"flex",gap:10,marginTop:18}}>
+        <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B"}}>Cancelar</button>
+        <button onClick={function(){
+          if (!form.responsable||!form.tipo||!form.color||!form.marca) { alert("Completa todos los campos."); return; }
+          props.onSave(Object.assign({},form,{id:"RES-"+Date.now(),fecha:new Date().toISOString().split("T")[0],hora:new Date().toLocaleTimeString("es-GT",{hour:"2-digit",minute:"2-digit"})}));
+        }} style={{flex:2,padding:11,background:"#166534",color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>Registrar Resurtido</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ModalEditarStock(props) {
+  var [stock,setStock] = useState(props.item.stock);
+  var [obs,setObs]     = useState(props.item.observaciones||"");
+  return (
+    <Modal title={"Stock - "+props.item.tipo+" "+props.item.color+" "+props.item.genero+" "+props.item.talla} onClose={props.onClose}>
+      <div style={{marginBottom:14}}><label style={sLbl}>Stock actual</label><input type="number" min={0} value={stock} onChange={function(e){setStock(parseInt(e.target.value)||0);}} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:20,fontWeight:700}}/></div>
+      <div style={{marginBottom:20}}><label style={sLbl}>Observaciones</label><input value={obs} onChange={function(e){setObs(e.target.value);}} style={{width:"100%",padding:"10px 12px",border:"1px solid #E2E8F0",borderRadius:8,fontSize:13}} placeholder="Notas opcionales..."/></div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={props.onClose} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B"}}>Cancelar</button>
+        <button onClick={function(){props.onSave(props.item.id,stock,obs);}} style={{flex:2,padding:11,background:"#C8102E",color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>Guardar</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Orders Tab ────────────────────────────────────────────────────────────────
+function PestanaPedidos(props) {
+  var orders=props.orders, inv=props.inventory, user=props.user, role=props.role, userName=props.userName;
+  var cf=props.cf, setCf=props.setCf;
+  var [sf,setSf]           = useState("Todos");
+  var [modal,setModal]     = useState(null);
+  var [confirm,setConf]    = useState(null);
+  var [descartaQ,setDescQ] = useState(null);
+  var [editPed,setEditPed] = useState(null);
+
+  var visible = role==="admin" ? orders : orders.filter(function(o){return o.creadoPor===user.email;});
+  var filtered = visible.filter(function(o){return (cf==="ALL"||o.pais===cf)&&(sf==="Todos"||o.estado===sf);});
+  var pendingCnt = visible.filter(function(o){return (cf==="ALL"||o.pais===cf)&&o.estado==="Pendiente";}).length;
+
+  function findInv(o) {
+    return inv.find(function(i){return i.tipo===o.tipo&&i.color===o.color&&i.marca===o.marca&&i.genero===o.genero&&i.talla===o.talla;});
+  }
+
+  async function guardarPedido(formData) {
+    var nuevo = Object.assign({},formData,{id:"ORD-"+Date.now(),fecha:new Date().toISOString().split("T")[0],estado:"Pendiente",creadoPor:user.email,creadoPorNombre:userName});
+    try {
+      await fbDb.collection("pedidos").doc(nuevo.id).set(nuevo);
+      // If talla especial, create negative inventory entry
+      if (nuevo.talla==="ESPECIAL" && nuevo.tallaEspecial) {
+        var invId = "inv-esp-"+nuevo.id;
+        await fbDb.collection("inventario").doc(invId).set({
+          id:invId, tipo:nuevo.tipo, color:nuevo.color, marca:nuevo.marca,
+          genero:nuevo.genero, talla:"ESPECIAL", tallaEspecial:nuevo.tallaEspecial,
+          stock:-nuevo.cantidad, observaciones:"Pedido especial: "+nuevo.tallaEspecial,
+          esEspecial:true, pedidoId:nuevo.id
+        });
+      }
+      setModal(null);
+    }
+    catch(e) { alert("Error al guardar: "+e.message); }
+  }
+
+  async function toggleEntrega(o) {
+    if (o.estado==="Entregado") {
+      await fbDb.collection("pedidos").doc(o.id).update({estado:"Pendiente",fechaEntrega:null});
+      if (o.talla==="ESPECIAL" && o.tallaEspecial) {
+        // Restore special inventory entry
+        var invId="inv-esp-"+o.id;
+        await fbDb.collection("inventario").doc(invId).set({
+          id:invId, tipo:o.tipo, color:o.color, marca:o.marca,
+          genero:o.genero, talla:"ESPECIAL", tallaEspecial:o.tallaEspecial,
+          stock:-o.cantidad, observaciones:"Pedido especial: "+o.tallaEspecial,
+          esEspecial:true, pedidoId:o.id
+        });
+      } else {
+        var i=findInv(o); if(i) await fbDb.collection("inventario").doc(i.id).update({stock:i.stock+o.cantidad});
+      }
+    } else if (o.estado==="Pendiente") { setConf(o); }
+  }
+
+  async function confirmarEntrega() {
+    var o=confirm;
+    await fbDb.collection("pedidos").doc(o.id).update({estado:"Entregado",fechaEntrega:new Date().toISOString().split("T")[0]});
+    if (o.talla==="ESPECIAL") {
+      // Delete the special inventory entry
+      var espId="inv-esp-"+o.id;
+      try { await fbDb.collection("inventario").doc(espId).delete(); } catch(e) {}
+    } else {
+      var i=findInv(o); if(i) await fbDb.collection("inventario").doc(i.id).update({stock:Math.max(0,i.stock-o.cantidad)});
+    }
+    setConf(null);
+  }
+
+  async function descartar() {
+    await fbDb.collection("pedidos").doc(descartaQ.id).update({estado:"Descartado",fechaDescarte:new Date().toISOString().split("T")[0]});
+    setDescQ(null);
+  }
+
+  async function recuperar(o) {
+    await fbDb.collection("pedidos").doc(o.id).update({estado:"Pendiente",fechaDescarte:null});
+  }
+
+  async function guardarEdit(formData) {
+    await fbDb.collection("pedidos").doc(editPed.id).update(formData);
+    setEditPed(null);
+  }
+
+  function puedeEditar(o) { return role==="admin" ? o.estado!=="Entregado" : (o.creadoPor===user.email&&o.estado==="Pendiente"); }
+  function puedeDescartar(o) { return role==="admin" ? true : o.creadoPor===user.email; }
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18,flexWrap:"wrap",gap:12}}>
+        <div>
+          <h2 style={{margin:"0 0 3px",fontSize:22,fontWeight:700,color:"#1A202C"}}>Pedidos de Uniformes</h2>
+          <p style={{margin:0,color:"#64748B",fontSize:13}}>{pendingCnt} pendiente(s)</p>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {role==="admin" && <button onClick={function(){var p=orders.filter(function(o){return (cf==="ALL"||o.pais===cf)&&o.estado==="Pendiente";}); if(!p.length){alert("No hay pedidos pendientes.");return;} generarExcel(p);}} style={{padding:"9px 14px",background:"#166534",color:"white",border:"none",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}><Ico d={IC.excel} size={14}/>Generar Pedido</button>}
+          <button onClick={function(){setModal("form");}} style={{padding:"9px 14px",background:"#C8102E",color:"white",border:"none",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}><Ico d={IC.form} size={14}/>Formulario</button>
+          <button onClick={function(){setModal("text");}} style={{padding:"9px 14px",background:"#7C3AED",color:"white",border:"none",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}><Ico d={IC.txt} size={14}/>Texto</button>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+        <PaisFiltro selected={cf} onChange={setCf}/>
+        <div style={{width:1,background:"#E2E8F0",alignSelf:"stretch"}}/>
+        {["Todos","Pendiente","Entregado","Descartado"].map(function(s){
+          return <button key={s} onClick={function(){setSf(s);}} style={{padding:"5px 13px",borderRadius:20,border:"2px solid",borderColor:sf===s?"#1A202C":"#E2E8F0",background:sf===s?"#1A202C":"white",color:sf===s?"white":"#4A5568",fontWeight:600,fontSize:12,cursor:"pointer"}}>{s}</button>;
+        })}
+      </div>
+
+      <div style={{background:"white",borderRadius:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.06)",border:"1px solid #F1F5F9"}}>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr>{["ID","Fecha","Empleado","Pais","Sucursal","Tipo","Color","Marca","Talla","Gen.","Cant.","Registrado por","Estado","Editar","Entregar","Descartar"].map(function(h){return <th key={h} style={sTH}>{h}</th>;})}</tr></thead>
+            <tbody>
+              {filtered.length===0 ? <tr><td colSpan={16} style={{textAlign:"center",padding:40,color:"#94A3B8"}}>Sin pedidos</td></tr>
+                : filtered.map(function(o,i) {
+                var isDesc = o.estado==="Descartado";
+                return (
+                  <tr key={o.id} style={{background:i%2===0?"white":"#FAFBFC",borderBottom:"1px solid #F8FAFC",opacity:isDesc?0.55:1}}>
+                    <td style={{padding:"10px 12px",fontWeight:700,color:"#C8102E",fontFamily:"monospace",whiteSpace:"nowrap"}}>{o.id}</td>
+                    <td style={{padding:"10px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.fecha}</td>
+                    <td style={{padding:"10px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{o.empleado}</td>
+                    <td style={{padding:"10px 12px"}}><span style={{fontWeight:700,color:"#C8102E"}}>{o.pais}</span></td>
+                    <td style={{padding:"10px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.sucursal}</td>
+                    <td style={{padding:"10px 12px"}}><Badge label={o.tipo}/></td>
+                    <td style={{padding:"10px 12px"}}><Badge label={o.color}/></td>
+                    <td style={{padding:"10px 12px",color:"#475569",fontSize:11,whiteSpace:"nowrap"}}>{o.marca}</td>
+                    <td style={{padding:"10px 12px",fontWeight:700,textAlign:"center"}}>{o.talla}</td>
+                    <td style={{padding:"10px 12px",color:"#64748B"}}>{o.genero}</td>
+                    <td style={{padding:"10px 12px",textAlign:"center"}}>{o.cantidad}</td>
+                    <td style={{padding:"10px 12px",color:"#64748B",fontSize:11,whiteSpace:"nowrap"}}>{o.creadoPorNombre||o.creadoPor||"-"}</td>
+                    <td style={{padding:"10px 12px"}}><Badge label={o.estado}/></td>
+                    <td style={{padding:"10px 12px"}}>
+                      {puedeEditar(o) ? <button onClick={function(){setEditPed(o);}} style={{width:32,height:32,borderRadius:8,border:"1px solid #BFDBFE",background:"#EFF6FF",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#1D4ED8"}}><Ico d={IC.edit} size={13}/></button> : <span style={{color:"#E2E8F0",display:"block",textAlign:"center"}}>-</span>}
+                    </td>
+                    <td style={{padding:"10px 12px"}}>
+                      {role==="admin" && !isDesc ? <button onClick={function(){toggleEntrega(o);}} style={{width:32,height:32,borderRadius:8,border:"1px solid",borderColor:o.estado==="Entregado"?"#A3CFBB":"#E2E8F0",background:o.estado==="Entregado"?"#D1E7DD":"white",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:o.estado==="Entregado"?"#22C55E":"#CBD5E0"}}><Ico d={IC.check} size={14}/></button> : <span style={{color:"#E2E8F0",display:"block",textAlign:"center"}}>-</span>}
+                    </td>
+                    <td style={{padding:"10px 12px"}}>
+                      {isDesc ? <button onClick={function(){recuperar(o);}} style={{width:32,height:32,borderRadius:8,border:"1px solid #CBD5E0",background:"#F8FAFC",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#64748B"}}><Ico d={IC.undo} size={13}/></button>
+                        : puedeDescartar(o)&&o.estado==="Pendiente" ? <button onClick={function(){setDescQ(o);}} style={{width:32,height:32,borderRadius:8,border:"1px solid #FCA5A5",background:"#FEF2F2",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#EF4444"}}><Ico d={IC.trash} size={13}/></button>
+                        : <span style={{color:"#E2E8F0",display:"block",textAlign:"center"}}>-</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {descartaQ && <Modal title="Descartar pedido?" onClose={function(){setDescQ(null);}}>
+        <div style={{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:12,padding:16,marginBottom:16}}>
+          <p style={{margin:"0 0 6px",fontWeight:700,fontSize:14}}>{descartaQ.empleado}</p>
+          <p style={{margin:0,fontSize:13,color:"#64748B"}}>{descartaQ.tipo} {descartaQ.color} - Talla {descartaQ.talla}</p>
+        </div>
+        <p style={{fontSize:13,color:"#64748B",marginBottom:18,lineHeight:1.6}}>El pedido quedara como <strong>Descartado</strong> pero permanecera en el Historico.</p>
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={function(){setDescQ(null);}} style={{flex:1,padding:11,background:"white",border:"1px solid #E2E8F0",borderRadius:10,cursor:"pointer",color:"#64748B"}}>Cancelar</button>
+          <button onClick={descartar} style={{flex:2,padding:11,background:"#EF4444",color:"white",border:"none",borderRadius:10,fontWeight:700,cursor:"pointer"}}>Si, descartar</button>
+        </div>
+      </Modal>}
+
+      {modal==="form" && <ModalFormulario onClose={function(){setModal(null);}} onSave={guardarPedido}/>}
+      {modal==="text" && <ModalTexto onClose={function(){setModal(null);}} onSave={guardarPedido}/>}
+      {editPed && <ModalEditarPedido order={editPed} onClose={function(){setEditPed(null);}} onSave={guardarEdit}/>}
+      {confirm && <ModalConfirmarEntrega order={confirm} invItem={findInv(confirm)} onConfirm={confirmarEntrega} onCancel={function(){setConf(null);}}/>}
+    </div>
+  );
+}
+
+// ── History Tab ───────────────────────────────────────────────────────────────
+function PestanaHistorico(props) {
+  var orders=props.orders, user=props.user, role=props.role, cf=props.cf, setCf=props.setCf;
+  var [search,setSearch] = useState("");
+  var visible = role==="admin" ? orders : orders.filter(function(o){return o.creadoPor===user.email;});
+  var filtered = visible.filter(function(o){
+    return (cf==="ALL"||o.pais===cf) && [o.empleado,o.sucursal,o.id,o.marca,o.tipo,o.estado,o.creadoPorNombre||""].join(" ").toLowerCase().includes(search.toLowerCase());
+  });
+  return (
+    <div>
+      <div style={{marginBottom:18}}>
+        <h2 style={{margin:"0 0 3px",fontSize:22,fontWeight:700}}>Historico de Solicitudes</h2>
+        <p style={{margin:0,color:"#64748B",fontSize:13}}>{filtered.length} registros {role!=="admin"?"(tus pedidos)":""}</p>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+        <PaisFiltro selected={cf} onChange={setCf}/>
+        <input value={search} onChange={function(e){setSearch(e.target.value);}} placeholder="Buscar empleado, sucursal, ID..."
+          style={{padding:"7px 13px",border:"1px solid #E2E8F0",borderRadius:20,fontSize:12,flex:1,minWidth:180,outline:"none"}}/>
+      </div>
+      <div style={{background:"white",borderRadius:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.06)",border:"1px solid #F1F5F9"}}>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr>{["ID","Fecha","Empleado","Pais","Sucursal","Puesto","Motivo","Tipo","Color","Marca","Talla","Talla Esp.","Gen.","Cant.","Registrado por","Estado","F.Entrega","F.Descarte"].map(function(h){return <th key={h} style={sTH}>{h}</th>;})}</tr></thead>
+            <tbody>
+              {filtered.length===0 ? <tr><td colSpan={17} style={{textAlign:"center",padding:40,color:"#94A3B8"}}>Sin resultados</td></tr>
+                : filtered.map(function(o,i){return (
+                <tr key={o.id} style={{background:i%2===0?"white":"#FAFBFC",borderBottom:"1px solid #F8FAFC",opacity:o.estado==="Descartado"?0.6:1}}>
+                  <td style={{padding:"9px 12px",fontWeight:700,color:"#C8102E",fontFamily:"monospace"}}>{o.id}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.fecha}</td>
+                  <td style={{padding:"9px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{o.empleado}</td>
+                  <td style={{padding:"9px 12px"}}><span style={{fontWeight:700,color:"#C8102E"}}>{o.pais}</span></td>
+                  <td style={{padding:"9px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.sucursal}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B"}}>{o.puesto}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B"}}>{o.motivo}</td>
+                  <td style={{padding:"9px 12px"}}><Badge label={o.tipo}/></td>
+                  <td style={{padding:"9px 12px"}}><Badge label={o.color}/></td>
+                  <td style={{padding:"9px 12px",color:"#475569",fontSize:11,whiteSpace:"nowrap"}}>{o.marca}</td>
+                  <td style={{padding:"9px 12px",fontWeight:700,textAlign:"center"}}>{o.talla}</td>
+                  <td style={{padding:"9px 12px",color:"#7C3AED",fontWeight:o.talla==="ESPECIAL"?700:400}}>{o.talla==="ESPECIAL"?(o.tallaEspecial||"-"):"-"}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B"}}>{o.genero}</td>
+                  <td style={{padding:"9px 12px",textAlign:"center"}}>{o.cantidad}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B",fontSize:11,whiteSpace:"nowrap"}}>{o.creadoPorNombre||o.creadoPor||"-"}</td>
+                  <td style={{padding:"9px 12px"}}><Badge label={o.estado}/></td>
+                  <td style={{padding:"9px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.fechaEntrega||"-"}</td>
+                  <td style={{padding:"9px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{o.fechaDescarte||"-"}</td>
+                </tr>
+              );})}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Inventory Tab ─────────────────────────────────────────────────────────────
+function PestanaInventario(props) {
+  var inventory=props.inventory, orders=props.orders, resurtidos=props.resurtidos, role=props.role, cf=props.cf, setCf=props.setCf;
+  var [fT,setFT]=useState(null), [fC,setFC]=useState(null), [fM,setFM]=useState(null);
+  var [editItem,setEditItem]=useState(null), [showRes,setShowRes]=useState(false), [showHist,setShowHist]=useState(false);
+
+  var lowList = inventory.filter(function(i){return !i.esEspecial && i.stock<=LOW_STOCK;});
+  var demand = {};
+  orders.filter(function(o){return (cf==="ALL"||o.pais===cf)&&o.estado==="Pendiente";}).forEach(function(o){
+    var k=o.genero+"-"+o.tipo+"-"+o.color+"-"+o.marca+"-"+o.talla;
+    demand[k]=(demand[k]||0)+o.cantidad;
+  });
+
+  var tipos  = Array.from(new Set(CATALOGO.map(function(c){return c.tipo;})));
+  var colors = Array.from(new Set(CATALOGO.filter(function(c){return !fT||c.tipo===fT;}).map(function(c){return c.color;})));
+  var marcas = Array.from(new Set(CATALOGO.filter(function(c){return (!fT||c.tipo===fT)&&(!fC||c.color===fC);}).map(function(c){return c.marca;})));
+
+  function reset(lvl) { if(lvl<=0){setFT(null);setFC(null);setFM(null);}else if(lvl<=1){setFC(null);setFM(null);}else setFM(null); }
+
+  var filtInv = inventory.filter(function(i){return (!fT||i.tipo===fT)&&(!fC||i.color===fC)&&(!fM||i.marca===fM);});
+  var grouped = {};
+  filtInv.forEach(function(i){
+    if(!grouped[i.tipo]) grouped[i.tipo]={};
+    if(!grouped[i.tipo][i.color]) grouped[i.tipo][i.color]={};
+    if(!grouped[i.tipo][i.color][i.marca]) grouped[i.tipo][i.color][i.marca]=[];
+    grouped[i.tipo][i.color][i.marca].push(i);
+  });
+
+  async function saveStock(id,stock,obs) { await fbDb.collection("inventario").doc(id).update({stock:stock,observaciones:obs}); setEditItem(null); }
+
+  async function handleRes(data) {
+    var inv=inventory.find(function(i){return i.tipo===data.tipo&&i.color===data.color&&i.marca===data.marca&&i.genero===data.genero&&i.talla===data.talla;});
+    var newStock = inv ? inv.stock+data.cantidad : data.cantidad;
+    if (inv) await fbDb.collection("inventario").doc(inv.id).update({stock:newStock});
+    await fbDb.collection("resurtidos").add(Object.assign({},data,{stockAntes:inv?inv.stock:0,stockDespues:newStock}));
+    setShowRes(false);
+  }
+
+  function chip(active,color) {
+    return {padding:"5px 12px",borderRadius:20,border:"2px solid",borderColor:active?(color||"#1A202C"):"#E2E8F0",background:active?(color||"#1A202C"):"white",color:active?"white":"#4A5568",fontWeight:700,fontSize:12,cursor:"pointer"};
+  }
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18,flexWrap:"wrap",gap:12}}>
+        <div>
+          <h2 style={{margin:"0 0 3px",fontSize:22,fontWeight:700}}>Inventario de Uniformes</h2>
+          <p style={{margin:0,color:"#64748B",fontSize:13}}>Alerta stock bajo: menos de {LOW_STOCK} unidades {role!=="admin"?"(solo lectura)":""}</p>
+        </div>
+        {role==="admin" && <div style={{display:"flex",gap:8}}>
+          <button onClick={function(){setShowHist(true);}} style={{padding:"9px 14px",background:"white",color:"#1A202C",border:"1px solid #E2E8F0",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+            <Ico d={IC.history} size={14}/>Historial {resurtidos.length>0&&<span style={{background:"#166534",color:"white",borderRadius:10,fontSize:10,padding:"1px 6px"}}>{resurtidos.length}</span>}
+          </button>
+          <button onClick={function(){setShowRes(true);}} style={{padding:"9px 14px",background:"#166534",color:"white",border:"none",borderRadius:10,fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}><Ico d={IC.res} size={14}/>Registrar Resurtido</button>
+        </div>}
+      </div>
+
+      {lowList.length>0 && <div style={{background:"#FFF3CD",border:"1px solid #FFE69C",borderRadius:12,padding:"12px 16px",marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:8}}><Ico d={IC.alert} size={16}/><span style={{fontWeight:700,color:"#856404",fontSize:13}}>Stock bajo en {lowList.length} articulo(s)</span></div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{lowList.map(function(i){return <span key={i.id} style={{background:"white",border:"1px solid #FCD34D",borderRadius:8,padding:"3px 9px",fontSize:11,fontWeight:600,color:"#92400E"}}>{i.tipo} {i.color} {i.marca} {i.genero} {i.talla}: <strong>{i.stock}</strong></span>;})}</div>
+      </div>}
+
+      {role==="admin" && (function(){
+        var especiales = orders.filter(function(o){return o.talla==="ESPECIAL"&&o.estado==="Pendiente";});
+        if (especiales.length===0) return null;
+        return <div style={{background:"#FEF2F2",border:"2px solid #C8102E",borderRadius:14,padding:"16px 20px",marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+            <div style={{width:10,height:10,background:"#C8102E",borderRadius:"50%",animation:"none"}}/>
+            <span style={{fontWeight:800,color:"#C8102E",fontSize:14,textTransform:"uppercase",letterSpacing:"0.05em"}}>
+              Pedidos Especiales Pendientes ({especiales.length})
+            </span>
+          </div>
+          <div style={{display:"grid",gap:8}}>
+            {especiales.map(function(o){return (
+              <div key={o.id} style={{background:"white",borderRadius:10,padding:"12px 16px",border:"1px solid #FCA5A5",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:13,color:"#1A202C",marginBottom:2}}>{o.empleado}</div>
+                  <div style={{fontSize:12,color:"#64748B"}}>{o.pais} · {o.sucursal} · {o.puesto}</div>
+                  <div style={{fontSize:12,color:"#64748B"}}>{o.tipo} {o.color} · {o.marca}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{background:"#7C3AED",color:"white",borderRadius:8,padding:"4px 12px",fontSize:13,fontWeight:800,marginBottom:4}}>
+                    TALLA ESPECIAL: {o.tallaEspecial||"-"}
+                  </div>
+                  <div style={{fontSize:11,color:"#64748B"}}>Gen: {o.genero} · Cant: {o.cantidad} · {o.fecha}</div>
+                  <div style={{fontSize:11,color:"#94A3B8"}}>Registrado por: {o.creadoPorNombre||o.creadoPor}</div>
+                </div>
+              </div>
+            );})}
+          </div>
+        </div>;
+      })()}
+
+      <div style={{background:"white",border:"1px solid #F1F5F9",borderRadius:14,padding:"14px 18px",marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Filtros en cascada</div>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:11,color:"#64748B",fontWeight:700,marginBottom:6}}>TIPO</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {fT&&<button onClick={function(){reset(0);}} style={chip(false)}>Limpiar todo</button>}
+            {tipos.map(function(t){return <button key={t} onClick={function(){t===fT?reset(0):(setFT(t),reset(1));}} style={chip(fT===t)}>{t}</button>;})}
+          </div>
+        </div>
+        {fT&&<div style={{marginBottom:10,paddingLeft:16,borderLeft:"2px solid #E2E8F0"}}>
+          <div style={{fontSize:11,color:"#64748B",fontWeight:700,marginBottom:6}}>COLOR</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {fC&&<button onClick={function(){reset(1);}} style={chip(false)}>Limpiar</button>}
+            {colors.map(function(c){return <button key={c} onClick={function(){c===fC?reset(1):(setFC(c),reset(2));}} style={chip(fC===c,c==="NEGRA"?"#212529":c==="GRIS"?"#6B7280":"#475569")}>{c}</button>;})}
+          </div>
+        </div>}
+        {fC&&<div style={{paddingLeft:32,borderLeft:"2px solid #E2E8F0"}}>
+          <div style={{fontSize:11,color:"#64748B",fontWeight:700,marginBottom:6}}>MARCA</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {fM&&<button onClick={function(){reset(2);}} style={chip(false)}>Limpiar</button>}
+            {marcas.map(function(m){return <button key={m} onClick={function(){setFM(m===fM?null:m);}} style={chip(fM===m,"#C8102E")}>{m}</button>;})}
+          </div>
+        </div>}
+      </div>
+
+      <div style={{marginBottom:14}}><PaisFiltro selected={cf} onChange={setCf}/></div>
+
+      {Object.keys(grouped).map(function(tipo){return (
+        <div key={tipo} style={{marginBottom:28}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}><Badge label={tipo}/><div style={{flex:1,height:1,background:"#F1F5F9"}}/></div>
+          {Object.keys(grouped[tipo]).map(function(color){return (
+            <div key={color} style={{marginBottom:18,paddingLeft:16,borderLeft:"3px solid #F1F5F9"}}>
+              <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:8}}><Badge label={color}/></div>
+              {Object.keys(grouped[tipo][color]).map(function(marca){
+                var items = grouped[tipo][color][marca];
+                return (
+                  <div key={marca} style={{marginBottom:16,paddingLeft:16}}>
+                    <div style={{fontSize:11,color:"#94A3B8",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>Logo: {marca}</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:8}}>
+                      {items.slice().sort(function(a,b){var ag=a.genero==="Hombre"?0:1,bg=b.genero==="Hombre"?0:1;if(ag!==bg)return ag-bg;return(TALLAS.indexOf(a.talla)||0)-(TALLAS.indexOf(b.talla)||0);}).map(function(item){
+                        var dk=item.genero+"-"+item.tipo+"-"+item.color+"-"+item.marca+"-"+item.talla;
+                        var dem=demand[dk]||0, isLow=!item.esEspecial&&item.stock<=LOW_STOCK, isOut=!item.esEspecial&&item.stock===0;
+                        return (
+                          <div key={item.id} style={{background:"white",borderRadius:12,padding:14,border:"2px solid "+(isOut?"#FCA5A5":isLow?"#FCD34D":"#F1F5F9"),position:"relative",overflow:"hidden"}}>
+                            {item.esEspecial&&<div style={{position:"absolute",top:0,right:0,background:"#7C3AED",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderBottomLeftRadius:6}}>ESPECIAL</div>}
+                            {!item.esEspecial&&isOut&&<div style={{position:"absolute",top:0,right:0,background:"#EF4444",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderBottomLeftRadius:6}}>AGOTADO</div>}
+                            {!item.esEspecial&&isLow&&!isOut&&<div style={{position:"absolute",top:0,right:0,background:"#F59E0B",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderBottomLeftRadius:6}}>BAJO</div>}
+                            <div style={{fontSize:10,color:"#94A3B8",fontWeight:700,textTransform:"uppercase"}}>{item.genero}</div>
+                            <div style={{fontSize:22,fontWeight:900,color:item.esEspecial?"#7C3AED":"#1A202C",lineHeight:1.1}}>{item.talla==="ESPECIAL"?(item.tallaEspecial||"ESPECIAL"):item.talla}</div>
+                            {item.esEspecial&&<div style={{fontSize:10,background:"#7C3AED",color:"white",borderRadius:6,padding:"2px 6px",display:"inline-block",marginBottom:2,fontWeight:700}}>PEDIDO ESPECIAL</div>}
+                            <div style={{fontSize:28,fontWeight:900,color:item.esEspecial?"#7C3AED":isOut?"#EF4444":isLow?"#F59E0B":"#1A202C",lineHeight:1}}>{item.esEspecial?"PEND":item.stock}<span style={{fontSize:11,fontWeight:400,color:"#94A3B8"}}>{item.esEspecial?"":"u"}</span></div>
+                            {dem>0&&<div style={{fontSize:10,color:"#C8102E",fontWeight:700,marginTop:2}}>-{dem} pend - disp: <strong>{item.stock-dem}</strong></div>}
+                            {role==="admin"&&!item.esEspecial&&<button onClick={function(){setEditItem(item);}} style={{marginTop:6,width:"100%",padding:"4px 0",background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:6,cursor:"pointer",color:"#64748B",fontSize:11,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><Ico d={IC.edit} size={11}/>Editar</button>}
+                          {item.esEspecial&&<div style={{marginTop:6,fontSize:10,color:"#7C3AED",textAlign:"center",fontStyle:"italic"}}>Se elimina al entregar</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );})}
+        </div>
+      );})}
+      {Object.keys(grouped).length===0&&<div style={{textAlign:"center",padding:48,color:"#94A3B8"}}>Selecciona filtros para ver el inventario</div>}
+
+      {showHist && <Modal title="Historial de Resurtidos" onClose={function(){setShowHist(false);}} wide>
+        {resurtidos.length===0 ? <p style={{textAlign:"center",color:"#94A3B8",padding:"24px 0"}}>No hay resurtidos registrados.</p>
+          : <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr>{["Fecha","Hora","Responsable","Tipo","Color","Marca","Genero","Talla","Cant.","Antes","Despues","Notas"].map(function(h){return <th key={h} style={sTH}>{h}</th>;})}</tr></thead>
+            <tbody>{resurtidos.slice().reverse().map(function(r,i){return (
+              <tr key={r.id||i} style={{background:i%2===0?"white":"#FAFBFC",borderBottom:"1px solid #F8FAFC"}}>
+                <td style={{padding:"9px 12px",color:"#64748B",whiteSpace:"nowrap"}}>{r.fecha}</td>
+                <td style={{padding:"9px 12px",color:"#64748B"}}>{r.hora}</td>
+                <td style={{padding:"9px 12px",fontWeight:600,whiteSpace:"nowrap"}}>{r.responsable}</td>
+                <td style={{padding:"9px 12px"}}><Badge label={r.tipo}/></td>
+                <td style={{padding:"9px 12px"}}><Badge label={r.color}/></td>
+                <td style={{padding:"9px 12px",fontSize:11,color:"#475569",whiteSpace:"nowrap"}}>{r.marca}</td>
+                <td style={{padding:"9px 12px",color:"#64748B"}}>{r.genero}</td>
+                <td style={{padding:"9px 12px",fontWeight:700,textAlign:"center"}}>{r.talla}</td>
+                <td style={{padding:"9px 12px",textAlign:"center"}}><span style={{background:"#DCFCE7",color:"#166534",fontWeight:800,padding:"2px 8px",borderRadius:10}}>+{r.cantidad}</span></td>
+                <td style={{padding:"9px 12px",textAlign:"center",color:"#64748B"}}>{r.stockAntes}</td>
+                <td style={{padding:"9px 12px",textAlign:"center",fontWeight:700,color:"#166534"}}>{r.stockDespues}</td>
+                <td style={{padding:"9px 12px",color:"#94A3B8",fontStyle:"italic"}}>{r.notas||"-"}</td>
+              </tr>
+            );})}
+            </tbody>
+          </table></div>}
+      </Modal>}
+      {showRes && <ModalResurtido onClose={function(){setShowRes(false);}} onSave={handleRes}/>}
+      {editItem && <ModalEditarStock item={editItem} onClose={function(){setEditItem(null);}} onSave={saveStock}/>}
+    </div>
+  );
+}
+
+// ── App Root ──────────────────────────────────────────────────────────────────
+function App() {
+  var [authUser,setAuthUser] = useState(undefined);
+  var [tab,setTab]           = useState("orders");
+  var [cf,setCf]             = useState("ALL");
+  var [orders,setOrders]     = useState([]);
+  var [inventory,setInv]     = useState([]);
+  var [resurtidos,setRes]    = useState([]);
+
+  useEffect(function(){
+    return fbAuth.onAuthStateChanged(function(u){ setAuthUser(u||null); });
+  },[]);
+
+  var role     = authUser ? (ROLES[authUser.email]||"reclutamiento") : null;
+  var userName = authUser ? (NOMBRES[authUser.email]||authUser.email) : null;
+
+  useEffect(function(){
+    if (!authUser) return;
+    var unsubs = [];
+    unsubs.push(fbDb.collection("pedidos").orderBy("fecha","desc").onSnapshot(function(snap){
+      setOrders(snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});}));
+    }));
+    unsubs.push(fbDb.collection("inventario").onSnapshot(async function(snap){
+      if (snap.empty) {
+        var batch = fbDb.batch();
+        buildInventario().forEach(function(item){ batch.set(fbDb.collection("inventario").doc(item.id),item); });
+        await batch.commit();
+      } else {
+        setInv(snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});}));
+      }
+    }));
+    unsubs.push(fbDb.collection("resurtidos").orderBy("fecha","desc").onSnapshot(function(snap){
+      setRes(snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});}));
+    }));
+    return function(){ unsubs.forEach(function(u){u();}); };
+  },[authUser]);
+
+  function logout() { fbAuth.signOut(); }
+
+  var visOrders = role==="admin" ? orders : orders.filter(function(o){return o.creadoPor===(authUser&&authUser.email);});
+  var lowCnt    = inventory.filter(function(i){return i.stock<=LOW_STOCK;}).length;
+  var pendCnt   = visOrders.filter(function(o){return (cf==="ALL"||o.pais===cf)&&o.estado==="Pendiente";}).length;
+
+  if (authUser===undefined) return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#1A202C"}}>
+      <div style={{textAlign:"center",color:"white"}}>
+        <div style={{width:48,height:48,background:"#C8102E",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}><Ico d={IC.inv} size={24} color="white"/></div>
+        <p style={{fontSize:14,color:"#94A3B8"}}>Cargando...</p>
+      </div>
+    </div>
+  );
+
+  if (!authUser) return <LoginScreen/>;
+
+  var TABS = [
+    {id:"orders",  label:"Pedidos",    icon:IC.orders,  badge:pendCnt},
+    {id:"history", label:"Historico",  icon:IC.history, badge:0},
+    {id:"inv",     label:"Inventario", icon:IC.inv,     badge:lowCnt, bColor:"#F59E0B"},
+  ];
+
+  return (
+    <div style={{minHeight:"100vh",background:"#F8FAFC"}}>
+      <header style={{background:"#1A202C",padding:"0 24px",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 10px rgba(0,0,0,0.3)"}}>
+        <div style={{maxWidth:1200,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center",height:56}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:28,height:28,background:"#C8102E",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center"}}><Ico d={IC.inv} size={15} color="white"/></div>
+            <div><div style={{color:"white",fontSize:15,fontWeight:700,lineHeight:1}}>FERCO</div><div style={{color:"#64748B",fontSize:9,letterSpacing:"0.12em",textTransform:"uppercase"}}>Control de Uniformes</div></div>
+          </div>
+          <nav style={{display:"flex",gap:3}}>
+            {TABS.map(function(t){return (
+              <button key={t.id} onClick={function(){setTab(t.id);}}
+                style={{padding:"6px 13px",background:tab===t.id?"rgba(200,16,46,0.2)":"transparent",border:tab===t.id?"1px solid rgba(200,16,46,0.4)":"1px solid transparent",borderRadius:8,color:tab===t.id?"#FCA5A5":"#94A3B8",fontWeight:tab===t.id?700:500,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:5,position:"relative"}}>
+                <Ico d={t.icon} size={14}/><span>{t.label}</span>
+                {t.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:t.bColor||"#C8102E",color:"white",borderRadius:10,fontSize:9,fontWeight:800,padding:"1px 4px",minWidth:14,textAlign:"center"}}>{t.badge}</span>}
+              </button>
+            );})}
+          </nav>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{textAlign:"right"}}>
+              <div style={{color:"white",fontSize:12,fontWeight:600}}>{userName}</div>
+              <Badge label={role}/>
+            </div>
+            <button onClick={logout} title="Cerrar sesion" style={{width:34,height:34,borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.05)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#94A3B8"}}>
+              <Ico d={IC.logout} size={16}/>
+            </button>
+          </div>
+        </div>
+      </header>
+      <main style={{maxWidth:1200,margin:"0 auto",padding:"24px 20px"}}>
+        {tab==="orders"  && <PestanaPedidos  orders={orders} inventory={inventory} cf={cf} setCf={setCf} user={authUser} role={role} userName={userName}/>}
+        {tab==="history" && <PestanaHistorico orders={orders} cf={cf} setCf={setCf} user={authUser} role={role}/>}
+        {tab==="inv"     && <PestanaInventario inventory={inventory} orders={orders} resurtidos={resurtidos} cf={cf} setCf={setCf} role={role}/>}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
