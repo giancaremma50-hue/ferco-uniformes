@@ -52,7 +52,7 @@ const NOMBRES = {
   "jenifer.cobo@ferco.com.gt":      "Jenifer Cobo",
 };
 const PAISES     = ["GT","HN","SV","MX"];
-const TALLAS     = ["XS","S","M","L","XL","XXL"];
+const TALLAS     = ["XS","S","M","L","XL","2XL"];
 const LOW_STOCK  = 5;
 var MOTIVOS_GT_SV_HN = ["Renovacion","Cambio de talla","Primer ingreso"];
 var MOTIVOS_MX       = ["Renovacion","Cambio de talla","Primer ingreso","Complemento de nuevo ingreso"];
@@ -81,6 +81,26 @@ function buildInventario() {
       ["Hombre","Mujer"].forEach(function(genero) {
         items.push({id:"inv-"+n++, tipo:cat.tipo, color:cat.color, marca:cat.marca, genero:genero, talla:talla, stock:6, observaciones:""});
       });
+    });
+  });
+  return items;
+}
+
+function buildInventario2XL() {
+  var items = [], n = 1;
+  var productos2XL = [
+    {tipo:"CAMISA",color:"NEGRA", marca:"FERCO CERAMICA"},
+    {tipo:"CAMISA",color:"BLANCA",marca:"FERCO CERAMICA"},
+    {tipo:"CAMISA",color:"BLANCA",marca:"EL REY DE LA CERAMICA"},
+    {tipo:"CAMISA",color:"BLANCA",marca:"MCP"},
+    {tipo:"BLUSA", color:"NEGRA", marca:"FERCO CERAMICA"},
+    {tipo:"BLUSA", color:"BLANCA",marca:"FERCO CERAMICA"},
+    {tipo:"BLUSA", color:"BLANCA",marca:"EL REY DE LA CERAMICA"},
+    {tipo:"BLUSA", color:"BLANCA",marca:"MCP"},
+  ];
+  productos2XL.forEach(function(cat) {
+    ["Hombre","Mujer"].forEach(function(genero) {
+      items.push({id:"inv-2xl-"+n++, tipo:cat.tipo, color:cat.color, marca:cat.marca, genero:genero, talla:"2XL", stock:0, observaciones:""});
     });
   });
   return items;
@@ -1113,7 +1133,15 @@ function App() {
         buildInventario().forEach(function(item){ batch.set(fbDb.collection("inventario").doc(item.id),item); });
         await batch.commit();
       } else {
-        setInv(snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});}));
+        var items = snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});});
+        var has2XL = items.some(function(i){return i.talla==="2XL";});
+        if (!has2XL) {
+          var batch = fbDb.batch();
+          buildInventario2XL().forEach(function(item){ batch.set(fbDb.collection("inventario").doc(item.id),item); });
+          await batch.commit();
+        } else {
+          setInv(items);
+        }
       }
     }));
     unsubs.push(fbDb.collection("resurtidos").orderBy("fecha","desc").onSnapshot(function(snap){
