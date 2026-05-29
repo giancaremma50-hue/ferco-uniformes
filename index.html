@@ -1136,6 +1136,7 @@ function App() {
         var items = snap.docs.map(function(d){return Object.assign({},d.data(),{id:d.id});});
         var has2XL = items.some(function(i){return i.talla==="2XL";});
         if (!has2XL) {
+          setInv(items);
           var batch = fbDb.batch();
           buildInventario2XL().forEach(function(item){ batch.set(fbDb.collection("inventario").doc(item.id),item); });
           await batch.commit();
