@@ -678,7 +678,7 @@ function PestanaPedidos(props) {
   }
 
   function puedeEditar(o) { return role==="admin" ? o.estado!=="Entregado" : (o.creadoPor===user.email&&o.estado==="Pendiente"); }
-  function puedeDescartar(o) { return role==="admin" ? true : o.creadoPor===user.email; }
+  function puedeEliminar(o) { return role!=="admin" && o.creadoPor===user.email && o.estado==="Pendiente"; }
 
   return (
     <div>
@@ -765,7 +765,7 @@ function PestanaPedidos(props) {
       <div style={{background:"white",borderRadius:12,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.06)",border:"1px solid #F1F5F9"}}>
         <div style={{overflowX:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead><tr>{["ID","Fecha","Empleado","Pais","Sucursal","Motivo","Tipo","Color","Marca","Talla","Gen.","Cant.","Registrado por","Estado","Editar"].map(function(h){return <th key={h} style={sTH}>{h}</th>;})}</tr></thead>
+            <thead><tr>{["ID","Fecha","Empleado","Pais","Sucursal","Motivo","Tipo","Color","Marca","Talla","Gen.","Cant.","Registrado por","Estado","Acciones"].map(function(h){return <th key={h} style={sTH}>{h}</th>;})}</tr></thead>
             <tbody>
               {filtered.length===0 ? <tr><td colSpan={16} style={{textAlign:"center",padding:40,color:"#94A3B8"}}>Sin pedidos</td></tr>
                 : filtered.map(function(o,i) {
@@ -798,8 +798,9 @@ function PestanaPedidos(props) {
                         </select>
                       ) : <Badge label={o.estado}/>}
                     </td>
-                    <td style={{padding:"10px 8px"}}>
+                    <td style={{padding:"10px 8px",display:"flex",gap:4,alignItems:"center"}}>
                       {puedeEditar(o) ? <button onClick={function(){setEditPed(o);}} style={{width:32,height:32,borderRadius:8,border:"1px solid #BFDBFE",background:"#EFF6FF",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#1D4ED8"}}><Ico d={IC.edit} size={13}/></button> : <span style={{color:"#E2E8F0",display:"block",textAlign:"center"}}>-</span>}
+                      {puedeEliminar(o) && <button onClick={async function(){if(!window.confirm("¿Eliminar este pedido? Esta acción no se puede deshacer."))return;try{await fbDb.collection("pedidos").doc(o.id).delete();}catch(e){alert("Error al eliminar: "+e.message);}}} title="Eliminar pedido" style={{width:32,height:32,borderRadius:8,border:"1px solid #FECACA",background:"#FEE2E2",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#DC2626"}}><Ico d={IC.trash} size={13}/></button>}
                     </td>
                   </tr>
                 );
